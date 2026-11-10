@@ -1,0 +1,20 @@
+[Unit]
+Description=ZCode-Server – lokale KI-Agent-Web-App (Stil zcode.z.ai)
+Documentation=https://github.com/HatchetMan111/ZCodeAI-Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zcode-server
+ExecStart=/usr/bin/node /opt/zcode-server/server.js
+Restart=always
+RestartSec=3
+Environment=ZCODE_PORT=8090
+Environment=ZCODE_HOME=/opt/zcode-server
+Environment=NODE_OPTIONS=--no-warnings
+# Harte Absicherung: Service läuft als root im (ohnehin unprivilegierten) LXC,
+# Agent-Befehle laufen im Workspace-Verzeichnis; Blocklist im server.js greift.
+
+[Install]
+WantedBy=multi-user.target
