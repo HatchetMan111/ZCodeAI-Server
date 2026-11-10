@@ -1,52 +1,58 @@
-# ⚡ ZCode-Server – Proxmox-Installer
+# ⚡ ZCode AI Server – Proxmox-Installer (echtes ZCode-Harness)
 
-Lokale **KI-Coding-Agent-Web-App im Stil von [zcode.z.ai](https://zcode.z.ai)** – als LXC-Container auf Proxmox VE, installiert mit einem Einzeiler im Stil der [Proxmox VE Community Scripts](https://community-scripts.github.io/ProxmoxVE).
+Das **echte ZCode-Harness** (das Open-Source-Repo [zai-org/ZCode](https://github.com/zai-org/ZCode), Apache 2.0) als **Server-Anwendung** auf Proxmox VE – installiert mit einem Einzeiler im Stil der [Proxmox VE Community Scripts](https://community-scripts.github.io/ProxmoxVE).
 
-> Warum diese App? zcode.z.ai selbst ist nur als Desktop-App verfügbar (kein CLI, kein Self-Hosting).
-> ZCode-Server bringt das Erlebnis als **Server-Anwendung** ins eigene Netz: Agent-Chat mit
-> Datei-Tools, Diffs, Bash-Ausführung im Workspace und Session-Verlauf – lokal, im Browser,
-> von allen Geräten im LAN erreichbar.
+**Kein API-Key nötig:** der Modell-Zugang läuft über den **Z.ai-Konto-Login** direkt im Web-UI („Connect to Z.ai"), wie in der Desktop-App. Der LAN-Zugriff ist per **Access-Token** geschützt, den der Installer ausgibt.
+
+> Was das ist: die Agent-CLI des offiziellen ZCode-Repos im Web-Server-Modus
+> (`zcode --web --host 0.0.0.0`) – dasselbe Harness wie in der Desktop-App
+> (Agent, Terminal, Git, Datei-Tools), nur mit Browser-UI. Die CLI wird im
+> LXC aus dem gepinnten Tag gebaut (Node 24 + pnpm, gefiltert ohne
+> Desktop/Electron-Ballast) und als systemd-Service betrieben.
+>
+> Historie: `legacy/` enthält die frühere selbst gebaute Agent-Web-App
+> (Klon-Experiment) – ersetzt durch dieses echte Harness.
 
 ---
 
 ## 🚀 Installation (auf dem Proxmox-Host als root)
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/ZCodeAI-Server/main/install/zcode-server.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/ZCodeAI-Server/main/install/zcode-ai-server.sh)"
 ```
 
 Das Script:
 
 - nimmt die **nächste freie CT-ID ab 200** (bzw. `--id N`)
-- erstellt einen **unprivilegierten LXC** (`zcode-server`, Debian 12, 2 vCPU / 4 GB RAM / 16 GB Disk, `onboot=1`)
-- installiert Node.js (Debian-Repo) + die App aus diesem Repo
-- richtet den **systemd-Service** ein (`Restart=always`, reboot-sicher)
-- prüft selbst: Service läuft + Web-UI antwortet (HTTP 200 auf `/api/health`)
-- gibt die finale URL aus
+- erstellt einen **unprivilegierten LXC** (`zcode-ai-server`, Debian 12, **4 vCPU / 8 GB RAM / 32 GB Disk**, `onboot=1`)
+- installiert Node 24.14.0 (offizielles Binary + SHA256-Prüfung) und klont `zai-org/ZCode` @ **v3.17.2**
+- baut die CLI-Dist im Container (gefilterte Workspace-Install **ohne Electron**) – dauert ~10–20 min
+- richtet den **systemd-Service** ein (`Restart=always`, reboot-sicher, fixer Access-Token)
+- prüft selbst: Service läuft + Web-UI antwortet (HTTP 200 auf `/health`)
+- gibt die **fertige URL inkl. `?token=…`** aus
 
 **Optionen** (hinter dem schließenden Anführungszeichen anhängen):
 
 ```bash
-... " --id 210 --port 8090 --rootfs 32 --memory 4096 --ip 192.168.1.50/24 --gateway 192.168.1.1
+... " --id 210 --port 8090 --memory 16384 --rootfs 64 --ip 192.168.1.50/24 --gateway 192.168.1.1
 ```
 
-## 🔑 Erste Schritte
+## 🔑 Erste Schritte (ohne API-Key)
 
-1. `http://<CT-IP>:8090` öffnen
-2. **⚙️ Einstellungen** → API-Endpoint wählen (Default: `https://api.z.ai/api/coding/paas/v4` – Z.ai GLM Coding Plan) und den **API-Key** eintragen (z.ai → API-Keys). Alternativ jede OpenAI-kompatible URL: Z.ai Pay-as-you-go (`https://api.z.ai/api/paas/v4`), OpenRouter (`https://openrouter.ai/api/v1`) oder **Ollama lokal** (`http://<host>:11434/v1`) → dann läuft alles komplett ohne Cloud.
-3. **„Verbindung testen"** → links einen **Workspace** anlegen → Aufgabe beschreiben.
+1. Die ausgegebene URL öffnen: `http://<CT-IP>:8090/?token=<ACCESS-TOKEN>`
+2. **„Connect to Z.ai"** wählen und mit dem Z.ai-Konto anmelden (wie in der Desktop-App; alternativ „Use API key")
+3. Aufgabe beschreiben – der Agent läuft im Container (`/opt/zcode-ai/workspaces`), die UI im Browser
 
-Der Agent kann im gewählten Workspace: Verzeichnisse lesen (`list_dir`), Dateien lesen/schreiben/gezielt editieren (`read_file`/`write_file`/`edit_file`, mit Diff-Anzeige) und **Bash-Befehle ausführen** (`run_command`, Output + Exit-Code sichtbar). Standard-Modell: `glm-5.3`, alternativ `glm-5.3-flash`/`glm-4.6` oder aus dem Modell-Dialog.
-
-**Bestätigungsmodus** (ab Werk aktiv, wie „Ask before changes" in zcode.z.ai): jeder Bash-Befehl muss im UI freigegeben werden. Zusätzlich blockiert eine Blocklist gefährliche Befehle (`rm -rf /`, `mkfs`, `dd of=/dev/…`, Fork-Bomben, Pipe-to-Shell …) und jeder Befehl läuft mit Timeout im Container-Isolierten Workspace.
+Der Access-Token liegt im Container unter `/opt/zcode-ai/data/access-token` (chmod 600), bleibt über Updates und Reboots stabil und schützt die API/WebSocket-Schicht. Ohne gültigen Token lädt zwar die Seite, aber die Agent-Kommunikation ist blockiert.
 
 ## 🔧 Verwaltung
 
 ```bash
-# Status (Container, Service, Health-JSON, Workspaces)
+# Status (Container, Service, Health, Harness-Version, Token-URL)
 ... " --status
 
-# Update: App im Container aktualisieren – Workspaces, Sessions und API-Key bleiben erhalten
+# Update: Harness für die gepinnte Version neu bauen – Workspaces/Daten/Token bleiben
+# (neue ZCode-Version: ZCODE_VERSION oben im Installer ändern, dann --update)
 ... " --update
 
 # Deinstall (Container stoppen + löschen, Rückfrage mit --yes überspringbar)
@@ -60,40 +66,43 @@ Der Agent kann im gewählten Workspace: Verzeichnisse lesen (`list_dir`), Dateie
 Exakt kopierbare Langform (Modus hinter dem schließenden Anführungszeichen):
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/ZCodeAI-Server/main/install/zcode-server.sh)" --update
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/ZCodeAI-Server/main/install/zcode-ai-server.sh)" --update
 ```
 
 ## 🧱 Architektur
 
 ```
-Browser ──http──▶ LXC "zcode-server" (Debian 12, unprivileged, onboot=1)
-                    ├─ systemd: zcode-server.service  (0.0.0.0:8090)
-                    │    ├─ app/server.js   – pure Node-Backend (keine npm-Deps)
-                    │    │    • Agent-Loop: OpenAI-kompatible /chat/completions (streaming)
-                    │    │    • Tools: list_dir / read_file / write_file / edit_file / run_command / finish
-                    │    │    • Workspaces-Sandbox: /opt/zcode-server/workspaces/<name>
-                    │    │    • Settings + Sessions: /opt/zcode-server/data (JSON)
-                    │    └─ app/static      – gebaut React+Vite-Frontend (dieses Repo)
-                    └─ Daten bleiben bei --update erhalten; Container löschen = alles weg
+Browser (LAN) ──http──▶ LXC "zcode-ai-server" (Debian 12, unprivileged, 4 vCPU/8 GB, onboot=1)
+                          ├─ systemd: zcode-ai-server.service
+                          │    ExecStart: /opt/node24/bin/node
+                          │      /opt/zcode-ai/runtime/current/bin/zcode.mjs
+                          │      --web --host 0.0.0.0 --port 8090
+                          │      --workspace /opt/zcode-ai/workspaces --token <ACCESS-TOKEN>
+                          ├─ /opt/zcode-ai/runtime  – gebaute Dist (web/, server/, agent/)
+                          ├─ /opt/zcode-ai/src      – Clone zai-org/ZCode @ v3.17.2
+                          ├─ /opt/zcode-ai/data     – Sessions/Config + access-token
+                          └─ /opt/zcode-ai/workspaces – Agent-Arbeitsverzeichnisse
 ```
 
-- **Reboot-sicher:** Container `onboot=1`, Service `Restart=always`, `After=network-online.target`.
-- **Kein npm im Container:** das Frontend wird im Repo mitgeliefert (`app/static`), das Backend braucht nur das Debian-`nodejs`.
-- **Sicherheit:** Agent-Befehle laufen im unprivilegierten LXC, Pfade sind auf den Workspace beschränkt, Blocklist + Bestätigungsmodus + Timeouts aktiv. Der API-Key liegt nur im Container (`data/settings.json`, chmod 600) und verlässt ihn nur Richtung LLM-Endpoint.
+- **Quelle:** [zai-org/ZCode](https://github.com/zai-org/ZCode) (Apache 2.0), Tag `v3.17.2` gepinnt (`ZCODE_VERSION` oben im Installer)
+- **Build im CT:** `pnpm install --filter …` (ohne `@zcode/desktop` → kein Electron) + `tsc -p packages/shared` + `node scripts/build-zcode.mjs`
+- **Runtime:** eigenes node_modules (inkl. `@lydell/node-pty-linux-x64`-Prebuilds), nur System-Node nötig
+- **Reboot-sicher:** CT `onboot=1`, Service `Restart=always`, `After=network-online.target`
+- **Sicherheit:** Agent läuft im unprivilegierten LXC; Token schützt die API; Port nicht ohne Absicherung ins Internet exposen
 
 ## 🐞 Debugging
 
-- Install-Fehler: der Installer gibt die **komplette Fehlerkette** aus (Zeile, Befehl, Exit-Code, Log-Tail, Container-Logs) und löscht den Container nicht – Inspektion per `pct enter <ID>`.
+- Install-Fehler: der Installer gibt die **komplette Fehlerkette** aus (Zeile, Befehl, Exit-Code, Log-Tail, Container-Logs) und löscht den Container nicht – Inspektion per `pct enter <ID>`
+- Build-Log im Container: `pct exec <ID> -- tail -n 100 /var/log/zcode-ai-setup.log`
+- Service-Logs: `pct exec <ID> -- journalctl -u zcode-ai-server -f`
+- Health (Wahrheitsquelle): `curl http://<CT-IP>:8090/health`
 - Neustart mit vollem Trace: `... " --debug`
-- Service-Logs: `pct exec <ID> -- journalctl -u zcode-server -f`
-- Health (Wahrheitsquelle): `curl http://<CT-IP>:8090/api/health`
 
 ## ⚠️ Haftung
 
-Das Projekt ist ein privates Hobby-Tool ohne Garantie. Der Agent kann Code ausführen –
-die Isolation hängt von deinem Proxmox-Setup ab. Öffne den Port nicht ohne Absicherung
-ins Internet.
+Privates Hobby-Tool ohne Garantie. Der Agent kann Code im Container ausführen.
+Nutzung des ZCode-Harness unterliegt den Z.ai-Nutzungsbedingungen (GLM-Plan/Konto).
 
 ## Lizenz
 
-MIT – siehe [LICENSE](LICENSE).
+MIT für diese Installer-Repos-Dateien – das Harness selbst: Apache 2.0 ([zai-org/ZCode](https://github.com/zai-org/ZCode)). Siehe [LICENSE](LICENSE).

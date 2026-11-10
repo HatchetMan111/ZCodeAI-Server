@@ -1,0 +1,20 @@
+[Unit]
+Description=ZCode AI Server – echtes ZCode-Harness (zai-org/ZCode) im Web-Modus
+Documentation=https://github.com/HatchetMan111/ZCodeAI-Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zcode-ai
+Environment=ZCODE_DATA_BASE_DIR=/opt/zcode-ai/data
+Environment=HOME=/opt/zcode-ai
+Environment=PATH=/opt/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/node24/bin/node /opt/zcode-ai/runtime/current/bin/zcode.mjs --web --host 0.0.0.0 --port 8090 --workspace /opt/zcode-ai/workspaces --token REPLACE_ACCESS_TOKEN
+Restart=always
+RestartSec=3
+# Access-Token schützt die API/WebSocket-Schicht im LAN (nicht den API-Key – der
+# Zugang zu den Modellen läuft über den Z.ai-Konto-Login im Web-UI).
+
+[Install]
+WantedBy=multi-user.target
