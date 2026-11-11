@@ -497,17 +497,23 @@ do_install() {
         die "pct nicht gefunden – das Script muss auf einem Proxmox-VE-Host laufen."
     fi
 
-    # Bereits vorhanden?
-    local existing
-    existing=$(find_ct_id_by_hostname || true)
-    if [[ -n "$existing" ]]; then
+    # Bereits vorhanden? ALLE Treffer listen (doppelte Hostnamen = Warnfall)
+    local all_ids existing
+    all_ids=$(pct list 2>/dev/null | awk -v h="$CT_HOSTNAME" '$NF==h {print $1}' | tr '\n' ' ' | sed 's/ $//')
+    if [[ -n "$all_ids" ]]; then
+        existing=${all_ids%% *}
+        if [[ "$all_ids" == *" "* ]]; then
+            warn "MEHRERE Container mit Hostname '$CT_HOSTNAME': $all_ids"
+            warn "--force löscht nur $existing – überzählige vorher manuell räumen:"
+            warn "  pct stop <ID> && pct destroy <ID> --purge   (für jede doppelte ID)"
+        fi
         if $FORCE_RECREATE; then
-            warn "Container $existing ($CT_HOSTNAME) existiert – --force: lösche und lege neu an."
+            warn "Container $existing ($CT_HOSTNAME) existiert – --force: lösche und lege neu an (nächste freie ID)."
             warn "ALLE Workspaces/Sessions in diesem Container gehen verloren!"
             pct stop "$existing" || true
             pct destroy "$existing" --purge
         else
-            die "Container $existing mit Hostname '$CT_HOSTNAME' existiert bereits.\n  Update:  ${ONE_LINER} --update\n  Neu aufsetzen:  ${ONE_LINER} --force   (löscht alle Workspaces!)"
+            die "Container $all_ids mit Hostname '$CT_HOSTNAME' existiert bereits.\n  Update (dasselbe CT, Daten bleiben):  ${ONE_LINER} --update\n  Neu aufsetzen (löscht CT, wählt nächste freie ID):  ${ONE_LINER} --force\n  Doppelte manuell räumen:  pct stop <ID> && pct destroy <ID> --purge"
         fi
     fi
 
