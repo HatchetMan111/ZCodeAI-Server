@@ -31,6 +31,7 @@ REPO_OWNER="HatchetMan111"
 REPO_NAME="ZCodeAI-Server"
 REPO_BRANCH="main"
 ZCODE_VERSION="3.17.2"      # gepinnter Tag des offiziellen Repos zai-org/ZCode
+NODE_VERSION="24.14.0"      # vom Harness geforderte Node-Version (mise.toml) – NICHT die ZCode-Version!
 CT_ID=""                    # leer = automatisch nächste freie ID ab ID_SCAN_START
 ID_SCAN_START=200
 CT_HOSTNAME="zcode-ai-server"
@@ -310,16 +311,16 @@ mkdir -p /etc/dhcp/dhclient-enter-hooks.d
 printf '# ZCode AI Server: resolv.conf nicht von DHCP überschreiben lassen\nmake_resolv_conf() { :; }\n' > /etc/dhcp/dhclient-enter-hooks.d/no-dns
 printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' "${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
 
-echo ">>> Node.js ${ZCODE_VERSION} installieren (offizielles Binary nach /opt/node24) ..."
-if [[ ! -x /opt/node24/bin/node ]] || ! /opt/node24/bin/node --version 2>/dev/null | grep -q "^v${ZCODE_VERSION}"; then
+echo ">>> Node.js ${NODE_VERSION} installieren (offizielles Binary nach /opt/node24) ..."
+if [[ ! -x /opt/node24/bin/node ]] || ! /opt/node24/bin/node --version 2>/dev/null | grep -q "^v${NODE_VERSION}"; then
     # sha256sum -c braucht den exakten Dateinamen aus SHASUMS256.txt
-    curl -fSL --retry 3 "https://nodejs.org/dist/v${ZCODE_VERSION}/node-v${ZCODE_VERSION}-linux-x64.tar.xz" -o "/tmp/node-v${ZCODE_VERSION}-linux-x64.tar.xz"
-    curl -fsSL --retry 3 "https://nodejs.org/dist/v${ZCODE_VERSION}/SHASUMS256.txt" -o /tmp/node-SHASUMS.txt
-    grep "node-v${ZCODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS.txt | sha256sum -c -
+    curl -fSL --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz"
+    curl -fsSL --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" -o /tmp/node-SHASUMS.txt
+    grep "node-v${NODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS.txt | sha256sum -c -
     rm -rf /opt/node24
     mkdir -p /opt/node24
-    tar -xJf "/tmp/node-v${ZCODE_VERSION}-linux-x64.tar.xz" -C /opt/node24 --strip-components=1
-    rm -f "/tmp/node-v${ZCODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS.txt
+    tar -xJf "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" -C /opt/node24 --strip-components=1
+    rm -f "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS.txt
 fi
 export PATH="/opt/node24/bin:\$PATH"
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -400,7 +401,9 @@ run_inner_setup() {
     pct push "$ct_id" "$TMP_DIR/setup-inner.sh" /root/setup-inner.sh
     # ALLES läuft im inner-Script (inkl. curl-Install + Tarball-Download) –
     # das nackte Debian-Template hat kein curl, pct exec curl → Exit 127!
-    pct exec "$ct_id" -- bash -c "bash /root/setup-inner.sh 2>&1 | tee /var/log/zcode-ai-setup.log"
+    # Grube (tee-Pipe): ohne exit ${PIPESTATUS[0]} frisst die Pipe den inner-
+    # Exit-Code (Fehler im inner liefen als "erfolgreich" durch!).
+    pct exec "$ct_id" -- bash -c "bash /root/setup-inner.sh 2>&1 | tee /var/log/zcode-ai-setup.log; exit \${PIPESTATUS[0]}"
 }
 
 # ── Verifikation ───────────────────────────────────────────────────────────
