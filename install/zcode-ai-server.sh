@@ -334,9 +334,10 @@ corepack enable --install-directory /opt/node24/bin
 corepack prepare pnpm@10.33.2 --activate
 pnpm --version
 
-echo ">>> ZCode-Quelle klonen (zai-org/ZCode @ ${ZCODE_VERSION}) ..."
+echo ">>> ZCode-Quelle klonen (zai-org/ZCode @ v${ZCODE_VERSION}) ..."
 rm -rf /opt/zcode-ai/src
-git clone --depth 1 --branch "${ZCODE_VERSION}" https://github.com/zai-org/ZCode.git /opt/zcode-ai/src
+# GitHub-Tags tragen ein v-Prefix: ZCODE_VERSION=3.17.2 → Tag v3.17.2
+git clone --depth 1 --branch "v${ZCODE_VERSION}" https://github.com/zai-org/ZCode.git /opt/zcode-ai/src
 cd /opt/zcode-ai/src
 
 echo ">>> Workspace-Abhängigkeiten installieren (gefiltert – ohne Desktop/Electron) ..."
