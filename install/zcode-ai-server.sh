@@ -313,10 +313,15 @@ printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nn
 
 echo ">>> Node.js ${NODE_VERSION} installieren (offizielles Binary nach /opt/node24) ..."
 if [[ ! -x /opt/node24/bin/node ]] || ! /opt/node24/bin/node --version 2>/dev/null | grep -q "^v${NODE_VERSION}"; then
-    # sha256sum -c braucht den exakten Dateinamen aus SHASUMS256.txt
     curl -fSL --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz"
     curl -fsSL --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" -o /tmp/node-SHASUMS.txt
-    grep "node-v${NODE_VERSION}-linux-x64.tar.xz" /tmp/node-SHASUMS.txt | sha256sum -c -
+    # sha256sum -c löst Namen RELATIV ZUM CWD auf (inner läuft in /root, Datei
+    # liegt in /tmp) → Ziel-Pfad direkt in die Checksummen-Zeile schreiben.
+    NODE_SUM=\$(awk -v f="node-v${NODE_VERSION}-linux-x64.tar.xz" '\$2==f {print \$1}' /tmp/node-SHASUMS.txt)
+    if [[ -z "\$NODE_SUM" ]]; then
+        echo "FEHLER: node-v${NODE_VERSION}-linux-x64.tar.xz fehlt in SHASUMS256.txt"; exit 9
+    fi
+    echo "\${NODE_SUM}  /tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" | sha256sum -c -
     rm -rf /opt/node24
     mkdir -p /opt/node24
     tar -xJf "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" -C /opt/node24 --strip-components=1
