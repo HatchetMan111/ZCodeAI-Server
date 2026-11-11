@@ -299,6 +299,12 @@ echo ">>> Basis-Pakete (git, curl, xz, openssl) ..."
 apt-get update -qq
 apt-get install -y -qq git curl ca-certificates xz-utils tar openssl procps >/dev/null
 
+echo ">>> Installer-Tarball laden (systemd-Unit aus diesem Repo) ..."
+# Erst NACH dem apt-install – das nackte Debian-Template hat kein curl!
+curl -fsSL --retry 3 "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${REPO_BRANCH}" -o /tmp/zcode-ai-installer.tar.gz
+rm -rf /tmp/zcode-ai-src && mkdir -p /tmp/zcode-ai-src
+tar -xzf /tmp/zcode-ai-installer.tar.gz -C /tmp/zcode-ai-src --strip-components=1
+
 echo ">>> Nameserver festschreiben (DHCP-DNS des Netzes kann flaky sein) ..."
 mkdir -p /etc/dhcp/dhclient-enter-hooks.d
 printf '# ZCode AI Server: resolv.conf nicht von DHCP überschreiben lassen\nmake_resolv_conf() { :; }\n' > /etc/dhcp/dhclient-enter-hooks.d/no-dns
@@ -392,12 +398,8 @@ run_inner_setup() {
                | awk '{print $2}' | grep -v '^127\.' | head -1 || true)
     write_inner_script
     pct push "$ct_id" "$TMP_DIR/setup-inner.sh" /root/setup-inner.sh
-    # systemd-Unit kommt aus dem Installer-Tarball (funktioniert auch beim
-    # Einzeiler-Lauf, wo es kein lokales Repo-Verzeichnis gibt).
-    pct exec "$ct_id" -- curl -fsSL --retry 3 \
-        "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${REPO_BRANCH}" \
-        -o /tmp/zcode-ai-installer.tar.gz
-    pct exec "$ct_id" -- bash -c 'rm -rf /tmp/zcode-ai-src && mkdir -p /tmp/zcode-ai-src && tar -xzf /tmp/zcode-ai-installer.tar.gz -C /tmp/zcode-ai-src --strip-components=1'
+    # ALLES läuft im inner-Script (inkl. curl-Install + Tarball-Download) –
+    # das nackte Debian-Template hat kein curl, pct exec curl → Exit 127!
     pct exec "$ct_id" -- bash -c "bash /root/setup-inner.sh 2>&1 | tee /var/log/zcode-ai-setup.log"
 }
 
