@@ -296,9 +296,12 @@ set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C   # verhindert perl/locale-Warnungen im frischen Debian-CT
 
-echo ">>> Basis-Pakete (git, curl, xz, openssl) ..."
+echo ">>> Basis-Pakete (git, curl, xz, openssl, build-essential) ..."
 apt-get update -qq
-apt-get install -y -qq git curl ca-certificates xz-utils tar openssl procps >/dev/null
+# build-essential: node-pty (Workspace) hat kein linux-x64-Prebuild im
+# npm-Release → pnpm-Postinstall kompiliert per node-gyp (make/g++ nötig);
+# ebenso cpu-features (ssh2). python3 ist im Debian-Template enthalten.
+apt-get install -y -qq git curl ca-certificates xz-utils tar openssl procps build-essential >/dev/null
 
 echo ">>> Installer-Tarball laden (systemd-Unit aus diesem Repo) ..."
 # Erst NACH dem apt-install – das nackte Debian-Template hat kein curl!
