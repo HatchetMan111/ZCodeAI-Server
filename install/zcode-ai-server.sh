@@ -343,6 +343,29 @@ rm -rf /opt/zcode-ai/src
 git clone --depth 1 --branch "v${ZCODE_VERSION}" https://github.com/zai-org/ZCode.git /opt/zcode-ai/src
 cd /opt/zcode-ai/src
 
+echo ">>> Installer-Patches anwenden (Web-Modus-Fixes aus diesem Repo) ..."
+# Warum Patches statt Upstream-PR: v${ZCODE_VERSION} ist gepinnt; ohne diese Fixes
+# ist der Web-Modus nicht benutzbar (Projektordner anlegen, System-Info, Senden).
+# Details: patches/README.md. Ein nicht passender Patch bricht den Build ab –
+# still weiterzubauen würde genau die kaputte UI ausliefern.
+patch_list=(/tmp/zcode-ai-src/patches/*.patch)
+if [[ \${#patch_list[@]} -eq 0 || ! -e "\${patch_list[0]}" ]]; then
+    echo "FEHLER: keine Patches in /tmp/zcode-ai-src/patches gefunden"; exit 10
+fi
+for patch_file in "\${patch_list[@]}"; do
+    echo "    → \$(basename "\$patch_file")"
+    if ! git apply --whitespace=nowarn "\$patch_file"; then
+        echo "FEHLER: Patch \$(basename "\$patch_file") passt nicht auf v${ZCODE_VERSION}."
+        echo "        Upstream hat die betroffenen Dateien geändert – Patch erneuern oder ZCODE_VERSION umstellen."
+        exit 11
+    fi
+done
+# Marker: beweisen, dass die Fixes im Quellbaum angekommen sind (nicht nur "apply ok").
+grep -q "localProjectHost" packages/server/src/entry-http.ts
+grep -q "insecureContextCryptoPolyfill" packages/web/src/main.tsx
+grep -q "createDirectory" packages/services/src/project/contract.ts
+echo "    Patches angewendet und geprüft"
+
 echo ">>> Workspace-Abhängigkeiten installieren (gefiltert – ohne Desktop/Electron) ..."
 pnpm install \
     --filter "@zcode/cli..." \
@@ -363,6 +386,9 @@ node scripts/build-zcode.mjs --base-url http://localhost/zcode/ --version "${ZCO
 
 echo ">>> Runtime installieren (Layout wie das offizielle install.sh) ..."
 mkdir -p /opt/zcode-ai/runtime/releases /opt/zcode-ai/{data,workspaces}
+# Startordner für neue Projekte: der Verzeichnis-Dialog startet in \$HOME (/opt/zcode-ai);
+# mit dem Patch darf dort auch direkt ein neuer Ordner angelegt werden.
+mkdir -p /opt/zcode-ai/workspaces/default
 REL_DIR="/opt/zcode-ai/runtime/releases/${ZCODE_VERSION}"
 rm -rf "\${REL_DIR}.new" && mkdir -p "\${REL_DIR}.new"
 tar -xzf "dist/zcode/releases/${ZCODE_VERSION}/zcode-${ZCODE_VERSION}.tar.gz" -C "\${REL_DIR}.new"
@@ -416,8 +442,69 @@ run_inner_setup() {
 }
 
 # ── Verifikation ───────────────────────────────────────────────────────────
+# Echtes Health-Signal statt SPA-Fallback (der Server hat KEINE /health-Route:
+# jeder unbekannte Pfad liefert index.html mit 200 – ein 200 auf /health beweist
+# also nichts). Geprüft wird, was das UI wirklich braucht:
+#   1. index.html wird ausgeliefert (SPA-Root vorhanden)
+#   2. /api/server-info MIT Token → 200 + workspaces
+#   3. /api/server-info OHNE Token → 401 (Token-Schutz aktiv)
+#   4. WebSocket-Handshake auf /ws → 101 (sonst kommt keine Agent-Antwort)
+WEB_PROBE_SCRIPT='#!/usr/bin/env bash
+set -u
+PORT="${1:-8090}"
+BASE="http://127.0.0.1:${PORT}"
+TOKEN="$(cat /opt/zcode-ai/data/access-token 2>/dev/null || true)"
+fails=0
+report() { if [ "$1" = "ok" ]; then echo "  ✔ $2"; else echo "  ✘ $2"; fails=$((fails + 1)); fi; }
+
+ui_code=$(curl -s -o /tmp/zcode-probe-index.html -w "%{http_code}" --max-time 10 "$BASE/" || true)
+if [ "$ui_code" = "200" ] && grep -q "id=\"root\"" /tmp/zcode-probe-index.html 2>/dev/null; then
+    report ok "Web-UI liefert index.html (HTTP ${ui_code})"
+else
+    report fail "Web-UI liefert kein vollständiges index.html (HTTP ${ui_code:-000})"
+fi
+
+noauth=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/api/server-info" || true)
+if [ "$noauth" = "401" ]; then
+    report ok "API ohne Token gesperrt (HTTP 401)"
+else
+    report fail "API ohne Token antwortet mit ${noauth:-000} statt 401"
+fi
+
+api_code=$(curl -s -o /tmp/zcode-probe-info.json -w "%{http_code}" --max-time 10 \
+    -H "Authorization: Bearer ${TOKEN}" "$BASE/api/server-info" || true)
+if [ "$api_code" = "200" ] && grep -q "\"workspaces\"" /tmp/zcode-probe-info.json 2>/dev/null; then
+    report ok "API mit Token liefert Server-Info inkl. workspaces (HTTP ${api_code})"
+else
+    report fail "API mit Token liefert keine Server-Info (HTTP ${api_code:-000})"
+fi
+
+ws_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+    -H "Connection: Upgrade" -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+    "$BASE/ws?token=${TOKEN}" || true)
+if [ "$ws_code" = "101" ]; then
+    report ok "WebSocket-Handshake erfolgreich (HTTP 101)"
+else
+    report fail "WebSocket-Handshake fehlgeschlagen (HTTP ${ws_code:-000})"
+fi
+
+exit "$fails"'
+
+# Führt die Probe im Container aus; Rückgabe != 0, sobald ein Check fehlt.
+web_stack_probe() {
+    local ct_id="$1"
+    printf '%s\n' "$WEB_PROBE_SCRIPT" > "$TMP_DIR/webprobe.sh"
+    if ! pct push "$ct_id" "$TMP_DIR/webprobe.sh" /tmp/zcode-webprobe.sh >/dev/null 2>&1; then
+        err "Probe-Script konnte nicht in den Container kopiert werden"
+        return 1
+    fi
+    pct exec "$ct_id" -- bash /tmp/zcode-webprobe.sh "$PORT" || return 1
+    return 0
+}
+
 verify_installation() {
-    local ct_id="$1" tries=0 code=""
+    local ct_id="$1" tries=0 out=""
 
     header "✅ Verifikation"
 
@@ -434,22 +521,20 @@ verify_installation() {
         sleep 1
     done
 
-    # Web-UI antwortet? (/health – ohne Token erreichbar; Access-Schutz liegt
-    # auf der API-Schicht. Grube: curl -w gibt bei Verbindungsfehler bereits
-    # 000 aus – NIE zusätzlich || echo 000 anhängen, sonst falsch-positiv.)
+    # UI + API + WebSocket prüfen (Agent-Start kann beim ersten Lauf etwas dauern).
     tries=0
     while true; do
-        code=$(pct exec "$ct_id" -- curl -s -o /dev/null -w '%{http_code}' \
-               "http://127.0.0.1:${PORT}/health" || true)
-        if [[ "$code" == "200" ]]; then
-            ok "Web-UI antwortet (HTTP 200 auf /health)"
+        if out=$(web_stack_probe "$ct_id" 2>&1); then
+            echo "$out"
+            ok "Web-Stack vollständig: UI, API (nur mit Token), WebSocket"
             break
         fi
         tries=$((tries + 1))
         if [[ $tries -ge 30 ]]; then
-            die "Web-UI antwortet nicht (letzter HTTP-Code: ${code:-unbekannt}).\n  Debug: pct exec $ct_id -- journalctl -u zcode-ai-server -e"
+            echo "$out"
+            die "Web-Stack antwortet nicht vollständig (siehe ✘-Zeilen oben).\n  Debug: pct exec $ct_id -- journalctl -u zcode-ai-server -e"
         fi
-        sleep 1
+        sleep 2
     done
 }
 
@@ -482,7 +567,16 @@ print_summary() {
     echo -e "  ${CYAN}So geht's weiter (KEIN API-Key nötig):${NC}"
     echo "  1. Web-UI-URL (mit ?token=…) im Browser öffnen"
     echo "  2. „Connect to Z.ai“ wählen und mit deinem Z.ai-Konto anmelden"
-    echo "  3. Aufgabe beschreiben – der Agent läuft im Container, UI im Browser"
+    echo "  3. Projekt anlegen: „Select project“ → „Create project“ → „Choose folder“"
+    echo "     → im Ordner-Dialog „New folder“ (Ordner anlegen geht direkt im Browser)"
+    echo "  4. Aufgabe beschreiben – der Agent läuft im Container, UI im Browser"
+    echo ""
+    echo -e "  ${CYAN}Wichtig für LAN-Zugriff über http://<IP>:${NC}"
+    echo "  Agent, Chat und Ordner-Anlegen funktionieren normal. Nur Datei-Anhänge"
+    echo "  (Upload/Einfügen) brauchen einen „sicheren Kontext“ – also HTTPS oder"
+    echo "  localhost. Workaround: SSH-Tunnel vom eigenen Rechner:"
+    echo "    ssh -N -L 8090:<CT-IP>:${PORT} root@<PROXMOX-IP>"
+    echo "    danach http://localhost:8090/?token=<TOKEN> öffnen"
     echo ""
     echo -e "  ${CYAN}Nützliche Befehle (exakt kopierbar):${NC}"
     echo "  Status:    ${ONE_LINER} --status"
@@ -658,14 +752,17 @@ do_status() {
         info "Logs:      pct exec $ct_id -- journalctl -u zcode-ai-server -e"
     fi
 
-    local ip code
+    local ip out
     ip=$(get_ct_ip "$ct_id")
     if [[ -n "$ip" ]]; then
-        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${ip}:${PORT}/health" || true)
-        if [[ "$code" == "200" ]]; then
-            ok "Web-UI:    http://${ip}:${PORT}  (HTTP 200 – Zugriff mit ?token=…)"
+        ok "Web-UI:    http://${ip}:${PORT}  (Zugriff mit ?token=…)"
+        # Gleiche Probe wie bei der Installation – nicht der SPA-Fallback.
+        if out=$(web_stack_probe "$ct_id" 2>&1); then
+            echo "$out"
+            ok "Web-Stack:  UI + API (nur mit Token) + WebSocket in Ordnung"
         else
-            warn "Web-UI:    HTTP-Code ${code:-unbekannt} von http://${ip}:${PORT}"
+            echo "$out"
+            err "Web-Stack:  unvollständig (siehe ✘-Zeilen; Logs: pct exec $ct_id -- journalctl -u zcode-ai-server -e)"
         fi
         local token
         token=$(pct exec "$ct_id" -- cat /opt/zcode-ai/data/access-token 2>/dev/null || true)

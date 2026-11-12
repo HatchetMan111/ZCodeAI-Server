@@ -1,0 +1,40 @@
+diff --git a/packages/server/src/entry-http.ts b/packages/server/src/entry-http.ts
+index fb626295..b3ec4a5b 100644
+--- a/packages/server/src/entry-http.ts
++++ b/packages/server/src/entry-http.ts
+@@ -26,6 +26,8 @@ async function main(): Promise<void> {
+       sourceServerId: serverId,
+       zcodeBuiltinProviderConfigFilePath,
+       providerProvisioningTargetEnabled: Boolean(authToken),
++      // Browser-Clients dieses Servers arbeiten mit lokalen Projekten (hostId "local").
++      localProjectHost: true,
+     });
+ 
+   createHttpServer(services, port, {
+diff --git a/packages/services/src/node.ts b/packages/services/src/node.ts
+index a2cf2b2e..bfe3f725 100644
+--- a/packages/services/src/node.ts
++++ b/packages/services/src/node.ts
+@@ -3279,11 +3279,20 @@ export async function createServerHostServices(options: {
+   sourceServerId: string;
+   zcodeBuiltinProviderConfigFilePath: string;
+   providerProvisioningTargetEnabled?: boolean;
++  /**
++   * Web-Server-Modus: der Browser ist Client DIESES Hosts, also sind seine Projekte lokal.
++   * Ohne das Flag speichert der Server Projekte unter der synthetischen Host-ID
++   * `remote:server:<id>`, während die Web-UI `hostId: "local"` sendet — dann scheitern
++   * Ordnerauswahl (project.host-offline), Projektanlage (project.host-immutable) und
++   * Draft-Sessions (project.remote-project-required).
++   */
++  localProjectHost?: boolean;
+ }) {
+-  const projectStorageHostId = remoteHostIdFromWorkspaceIdentity(
++  const sourceServerHostId = remoteHostIdFromWorkspaceIdentity(
+     buildServerRemoteWorkspaceIdentity({ serverId: options.sourceServerId, workspacePath: "/" }),
+   );
+-  if (!projectStorageHostId) throw new Error("Invalid Source Server storage identity");
++  if (!sourceServerHostId) throw new Error("Invalid Source Server storage identity");
++  const projectStorageHostId = options.localProjectHost ? "local" : sourceServerHostId;
+   // Bug 原因：billing/balance 把 X-Device-Mid 当必填，而独立 Server 主机没有 Desktop main 写设备身份，
+   // buildZCodeSourceHeaders() 又只读不生成。原修复只放在旧 stdio entry，SSH/WSL/Docker 的 Core 与
+   // Lite HTTP 入口共用本装配却没有确保，首次 Start Plan 权益查询返回 400，Start 模型被判为不可用。

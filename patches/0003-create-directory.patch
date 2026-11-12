@@ -1,0 +1,285 @@
+diff --git a/packages/services/src/project/contract.ts b/packages/services/src/project/contract.ts
+index 40f23d97..036a2fca 100644
+--- a/packages/services/src/project/contract.ts
++++ b/packages/services/src/project/contract.ts
+@@ -34,6 +34,8 @@ export interface IProjectService {
+     path?: string;
+     includeHidden?: boolean;
+   }): Promise<{ path: string; entries: FileEntry[] }>;
++  /** 在选择向导里新建一个子目录；只建一层，同名已存在时明确报错，不静默复用。 */
++  createDirectory(params: { hostId?: string; path: string; name: string }): Promise<{ path: string }>;
+   /** 配置目录与项目选择；所属 Host 派生主目录状态，不加载任务。 */
+   readProjects(params?: { includeDeleted?: boolean; hostId?: string }): Promise<VirtualProject[]>;
+   /** SQLite 快照与所属 Host 主目录状态的只读投影；不为查询启动 Agent，也不触发自动归档。 */
+diff --git a/packages/services/src/project/index.ts b/packages/services/src/project/index.ts
+index c6225fc6..26f0403d 100644
+--- a/packages/services/src/project/index.ts
++++ b/packages/services/src/project/index.ts
+@@ -168,6 +168,32 @@ export function createProjectService(options: {
+         }),
+       };
+     },
++    async createDirectory(params) {
++      const input = z
++        .object({
++          hostId: z.string().min(1).optional(),
++          path: z.string().min(1),
++          name: z.string().min(1).max(255),
++        })
++        .strict()
++        .parse(params);
++      const remote = await route(input.hostId);
++      if (remote) return remote.createDirectory(input);
++      // 只接受单层目录名：向导里新建子目录，不接受绝对路径或 ../ 逃逸。
++      const name = input.name.trim();
++      if (!name || name === "." || name === ".." || /[\\/\0]/.test(name))
++        throw new Error("project.invalid-directory-name");
++      if (!isAbsolute(input.path)) throw new Error("project.absolute-path-required");
++      const target = join(normalize(input.path), name);
++      try {
++        await mkdir(target);
++      } catch (error) {
++        const code = (error as NodeJS.ErrnoException).code;
++        if (code === "EEXIST") throw new Error("project.directory-exists");
++        throw error;
++      }
++      return { path: target };
++    },
+     async readProjects(params) {
+       const remote = await route(params?.hostId);
+       return remote
+@@ -380,6 +406,7 @@ export function bindRemoteProjectIdentities(
+       };
+     },
+     readDirectory: (params) => service.readDirectory(params),
++    createDirectory: (params) => service.createDirectory(params),
+     saveProject: (input) => service.saveProject(input),
+     deleteProject: (id, hostId) => service.deleteProject(id, hostId),
+     restoreProject: (id, hostId) => service.restoreProject(id, hostId),
+diff --git a/packages/services/src/project/legacy-single-root.ts b/packages/services/src/project/legacy-single-root.ts
+index 0da1420b..771b790e 100644
+--- a/packages/services/src/project/legacy-single-root.ts
++++ b/packages/services/src/project/legacy-single-root.ts
+@@ -158,6 +158,7 @@ export function createLegacySingleRootProjectService(
+       };
+     },
+     saveProject: readOnly,
++    createDirectory: readOnly,
+     deleteProject: readOnly,
+     restoreProject: readOnly,
+     moveTask: readOnly,
+diff --git a/packages/ui/src/DirectoryBrowser.tsx b/packages/ui/src/DirectoryBrowser.tsx
+index 13e524c4..b06b1cd2 100644
+--- a/packages/ui/src/DirectoryBrowser.tsx
++++ b/packages/ui/src/DirectoryBrowser.tsx
+@@ -63,6 +63,8 @@ export function DirectoryBrowser({
+   services: {
+     fileService: Pick<IServiceAccessor["fileService"], "readdir">;
+     systemService: { info(): Promise<{ homedir: string }> };
++    /** 提供后，目录向导多出「新建文件夹」入口；不提供的宿主保持只读浏览。 */
++    createDirectory?: (params: { path: string; name: string }) => Promise<{ path: string }>;
+   };
+   onSelect: (path: string) => void;
+   onCancel: () => void;
+@@ -82,6 +84,10 @@ export function DirectoryBrowser({
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState("");
+   const [showHiddenDirectories, setShowHiddenDirectories] = useState(false);
++  const [creating, setCreating] = useState(false);
++  const [newFolderName, setNewFolderName] = useState("");
++  const [creatingFolder, setCreatingFolder] = useState(false);
++  const [createError, setCreateError] = useState("");
+   const requestedPathRef = useRef("");
+   const appliedNavigationRevisionRef = useRef(navigationRevision);
+   const listRef = useRef<HTMLDivElement>(null);
+@@ -127,6 +133,7 @@ export function DirectoryBrowser({
+     onNavigationStateChange?.(false);
+     setLoading(true);
+     setError("");
++    setCreateError("");
+     try {
+       const result = await services.fileService.readdir(
+         createDirectoryBrowserReadParams(path, nextShowHiddenDirectories),
+@@ -196,8 +203,33 @@ export function DirectoryBrowser({
+     }
+   };
+ 
+-  const handleSelectCurrentPath = () => {
+-    const selectedPath = currentPath.trim();
++  const handleCreateFolder = async (e: React.FormEvent) => {
++    e.preventDefault();
++    const create = services.createDirectory;
++    const name = newFolderName.trim();
++    if (!create || !name || !currentPath || creatingFolder) return;
++    setCreatingFolder(true);
++    setCreateError("");
++    try {
++      const created = await create({ path: currentPath, name });
++      setCreating(false);
++      setNewFolderName("");
++      // 建好即进入新目录：紧接着的“选择/打开”按钮就用它，用户不必再找一次。
++      await navigateTo(created.path);
++    } catch (err) {
++      logger.error("[DirectoryBrowser] 新建文件夹失败:", err);
++      const code = err instanceof Error ? err.message : String(err);
++      setCreateError(
++        code.includes("project.directory-exists")
++          ? intl.formatMessage({ id: "directoryBrowser.newFolderExists" })
++          : intl.formatMessage({ id: "directoryBrowser.newFolderFailed" }),
++      );
++    } finally {
++      setCreatingFolder(false);
++    }
++  };
++
++  const handleSelectCurrentPath = () => {    const selectedPath = currentPath.trim();
+     if (!selectedPath || loading || selecting) {
+       return;
+     }
+@@ -262,12 +294,71 @@ export function DirectoryBrowser({
+                   : "directoryBrowser.showHidden",
+               })}
+             </Button>
++            {services.createDirectory ? (
++              <Button
++                type="button"
++                variant="ghost"
++                size="lg"
++                className="h-9 min-w-0 flex-1 px-3 text-ui-base sm:flex-none"
++                disabled={!currentPath || loading}
++                onClick={() => {
++                  setCreateError("");
++                  setCreating((value) => !value);
++                }}
++              >
++                {intl.formatMessage({ id: "directoryBrowser.newFolder" })}
++              </Button>
++            ) : null}
+           </div>
+         </form>
++        {services.createDirectory && creating ? (
++          <form onSubmit={handleCreateFolder} className="mt-2 flex flex-col gap-2 sm:flex-row">
++            <Input
++              type="text"
++              aria-label={intl.formatMessage({
++                id: "directoryBrowser.newFolderPlaceholder",
++              })}
++              size="lg"
++              value={newFolderName}
++              onChange={(e) => setNewFolderName(e.target.value)}
++              placeholder={intl.formatMessage({
++                id: "directoryBrowser.newFolderPlaceholder",
++              })}
++              className="h-9 min-w-0 flex-1 font-mono placeholder:font-sans text-ui-base max-md:text-mobile-input-safe"
++              disabled={creatingFolder}
++            />
++            <div className="flex gap-2 sm:shrink-0">
++              <Button
++                type="submit"
++                size="lg"
++                className="h-9 min-w-0 flex-1 px-4 text-ui-base sm:flex-none"
++                disabled={!newFolderName.trim() || !currentPath || creatingFolder}
++                aria-busy={creatingFolder}
++              >
++                {intl.formatMessage({ id: "directoryBrowser.create" })}
++              </Button>
++              <Button
++                type="button"
++                variant="secondary"
++                size="lg"
++                className="h-9 min-w-0 flex-1 px-3 text-ui-base sm:flex-none"
++                disabled={creatingFolder}
++                onClick={() => {
++                  setCreating(false);
++                  setNewFolderName("");
++                  setCreateError("");
++                }}
++              >
++                {intl.formatMessage({ id: "common.cancel" })}
++              </Button>
++            </div>
++          </form>
++        ) : null}
+       </div>
+ 
+       {/* 错误提示 */}
+       {error ? <div className="text-ui-base text-destructive">{error}</div> : null}
++      {createError ? <div className="text-ui-base text-destructive">{createError}</div> : null}
+ 
+       {/* 目录列表；embedded 时外层 dir-shell 已带边框，列表不再叠加内层边框（原型单层框内分区）。 */}
+       <div
+diff --git a/packages/ui/src/Root.tsx b/packages/ui/src/Root.tsx
+index 6d7d3f71..d6b91638 100644
+--- a/packages/ui/src/Root.tsx
++++ b/packages/ui/src/Root.tsx
+@@ -1451,6 +1451,7 @@ function RootInner({
+       />
+     </>
+   ) : null;
++  const projectServiceForDirectoryBrowser = services.projectService;
+   const directoryBrowserDialog = directoryBrowserOpen ? (
+     <ScopedErrorBoundary
+       scope="directory-browser"
+@@ -1458,7 +1459,16 @@ function RootInner({
+       variant="silent"
+     >
+       <DirectoryBrowser
+-        services={services}
++        services={{
++          fileService: services.fileService,
++          systemService: services.systemService,
++          ...(projectServiceForDirectoryBrowser
++            ? {
++                createDirectory: (params: { path: string; name: string }) =>
++                  projectServiceForDirectoryBrowser.createDirectory(params),
++              }
++            : {}),
++        }}
+         onCancel={() => setDirectoryBrowserOpen(false)}
+         onSelect={(path) => {
+           setDirectoryBrowserOpen(false);
+diff --git a/packages/ui/src/i18n/locales/en-US.ts b/packages/ui/src/i18n/locales/en-US.ts
+index dfa52784..ca610280 100644
+--- a/packages/ui/src/i18n/locales/en-US.ts
++++ b/packages/ui/src/i18n/locales/en-US.ts
+@@ -2303,6 +2303,11 @@ const enUS: Record<string, string> = {
+   "directoryBrowser.opening": "Opening…",
+   "directoryBrowser.errorSystem": "Failed to get system info",
+   "directoryBrowser.errorReadDir": "Failed to read directory: {error}",
++  "directoryBrowser.newFolder": "New folder",
++  "directoryBrowser.newFolderPlaceholder": "New folder name",
++  "directoryBrowser.create": "Create",
++  "directoryBrowser.newFolderExists": "A folder with this name already exists.",
++  "directoryBrowser.newFolderFailed": "Failed to create the folder.",
+ 
+   // Update ready button
+   "updateReady.shortTitle": "Update",
+diff --git a/packages/ui/src/i18n/locales/zh-CN.ts b/packages/ui/src/i18n/locales/zh-CN.ts
+index 5704a01c..1da9b2b3 100644
+--- a/packages/ui/src/i18n/locales/zh-CN.ts
++++ b/packages/ui/src/i18n/locales/zh-CN.ts
+@@ -2130,6 +2130,11 @@ const zhCN: Record<string, string> = {
+   "directoryBrowser.opening": "正在打开…",
+   "directoryBrowser.errorSystem": "无法获取系统信息",
+   "directoryBrowser.errorReadDir": "无法读取目录：{error}",
++  "directoryBrowser.newFolder": "新建文件夹",
++  "directoryBrowser.newFolderPlaceholder": "新文件夹名称",
++  "directoryBrowser.create": "创建",
++  "directoryBrowser.newFolderExists": "同名文件夹已存在。",
++  "directoryBrowser.newFolderFailed": "无法创建文件夹。",
+ 
+   // 更新按钮
+   "updateReady.shortTitle": "更新",
+diff --git a/packages/ui/src/project-sidebar/useProjectDirectoryServices.ts b/packages/ui/src/project-sidebar/useProjectDirectoryServices.ts
+index ce37f248..d0349bee 100644
+--- a/packages/ui/src/project-sidebar/useProjectDirectoryServices.ts
++++ b/packages/ui/src/project-sidebar/useProjectDirectoryServices.ts
+@@ -13,6 +13,8 @@ export function useProjectDirectoryServices(service: IProjectService, hostId?: s
+           readdir: async (params: { path: string; includeHidden?: boolean }) =>
+             (await service.readDirectory({ ...params, hostId })).entries,
+         },
++        createDirectory: async (params: { path: string; name: string }) =>
++          await service.createDirectory({ ...params, hostId }),
+       },
+     }),
+     [service, hostId],
